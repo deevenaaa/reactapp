@@ -169,43 +169,65 @@ jobs:
 
             TAG="${{ steps.deploy-meta.outputs.tag }}"
 
-            echo "================================"
+            CONTAINER="reactapp-prod"
 
-            echo "Starting production deployment"
+            echo "Starting deployment: $IMAGE:$TAG"
 
-            echo "Image: $IMAGE:$TAG"
-
-            echo "================================"
-
-            # Pull the exact production image
+            # Pull new image
 
             sudo docker pull "$IMAGE:$TAG"
 
-            # Remove the previous production container
+            # Stop and remove old container
 
-            sudo docker rm -f reactapp-prod || true
+            sudo docker rm -f "$CONTAINER" || true
 
-            # Start the new production container
+            # Start new container
 
             sudo docker run -d \
 
-              --name reactapp-prod \
+            --name "$CONTAINER" \
 
-              --restart unless-stopped \
+            --restart unless-stopped \
 
-              -p 80:80 \
+            -p 80:80 \
 
-              "$IMAGE:$TAG"
+            "$IMAGE:$TAG"
 
-            # Verify deployment
+            # Wait for container startup
 
-            sudo docker ps --filter "name=reactapp-prod"
+            sleep 5
+
+            # Verify container is running
+
+            if [ "$(sudo docker inspect -f '{{.State.Running}}' "$CONTAINER")" != "true" ]; then
+
+            echo "Deployment failed!"
+
+            sudo docker logs "$CONTAINER"
+
+            exit 1
+
+            fi
+
+            # Verify HTTP response
+
+            if ! curl -fsS http://localhost/ > /dev/null; then
+
+            echo "Application health check failed!"
+
+            sudo docker logs "$CONTAINER"
+
+            exit 1
+
+            fi
+
+            echo "Deployment successful!"
+
+            sudo docker ps --filter "name=$CONTAINER"
 
             echo "Running image:"
 
-            sudo docker inspect reactapp-prod \
+            sudo docker inspect "$CONTAINER" \
 
-              --format='{{.Config.Image}}'
-
-            echo "Production deployment successful!"
+            --format='{{.Config.Image}}'
  
