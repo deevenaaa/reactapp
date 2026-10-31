@@ -1,8 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import App from './App';
-
-test('renders learn react link', () => {
-  render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+test('renders the CI/CD pipeline heading', () => {
+ render(<App />);
+ const heading = screen.getByText(/CI\/CD Pipeline/i);
+ expect(heading).toBeInTheDocument();
 });
