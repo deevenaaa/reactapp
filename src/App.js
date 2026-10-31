@@ -8,7 +8,7 @@ const STEPS = [
 
     color: '#6366f1',
 
-    title: 'Developer Commits Code',
+    title: 'Developer Commits Code & Pushes to GitHub',
 
     desc: 'Any code change is committed locally and pushed to GitHub. The branch you push to determines what happens next in the pipeline.',
 
