@@ -1,0 +1,28 @@
+name: CI — Test on Every Push
+on:
+ push:
+   branches-ignore:
+     - main        # main has its own workflow
+ pull_request:     # also runs on every PR
+jobs:
+ test:
+   name:  Install & Test
+   runs-on: ubuntu-latest
+   steps:
+     - name: Checkout code
+       uses: actions/checkout@v4
+     - name: Setup Node.js 20
+       uses: actions/setup-node@v4
+       with:
+         node-version: '20'
+         cache: 'npm'
+     - name: Install dependencies
+       run: npm ci
+     - name: Run tests
+       run: npm test -- --watchAll=false --ci
+       env:
+         CI: true
+     - name: Build (smoke test — catch compile errors)
+       run: npm run build
+       env:
+         CI: true
