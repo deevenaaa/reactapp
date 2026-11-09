@@ -91,8 +91,7 @@ jobs:
        working-directory: terraform
        run: |
          if terraform show -json tfplan | jq -e \
-           '[.resource_changes[]?.change.actions[]?] | any(. == "delete")' \
->          /dev/null; then
+           '[.resource_changes[]?.change.actions[]?] | any(. == "delete")' \ > /dev/null; then
            echo "::error::Terraform plan contains a deletion or replacement."
            echo "Review the plan before allowing this deployment."
            exit 1
