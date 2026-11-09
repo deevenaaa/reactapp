@@ -21,3 +21,20 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+*.tfplan
+
+# SSH private keys
+*.pem
+id_rsa
+reactapp-azure-key
+
+# Environment files
+.env
+.env.local
+backend.hcl
