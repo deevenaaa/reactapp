@@ -1,0 +1,17 @@
+#cloud-config
+# Update Ubuntu packages
+package_update: true
+package_upgrade: false
+# Install Docker Engine from Ubuntu repositories
+packages:
+ - docker.io
+# Execute commands after package installation
+runcmd:
+ # Enable Docker at startup
+ - systemctl enable docker
+ # Start Docker
+ - systemctl start docker
+ # Allow admin user to execute Docker commands
+ - usermod -aG docker azureadmin
+# Log successful configuration
+ - echo "Docker installation completed" > /var/log/docker-setup-status.log

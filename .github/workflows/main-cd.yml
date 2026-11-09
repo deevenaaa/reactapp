@@ -1,0 +1,247 @@
+name: React App - Terraform + Docker + Azure CD
+on:
+ push:
+   branches:
+     - dev
+     - main
+ workflow_dispatch:
+permissions:
+ contents: read
+ id-token: write
+concurrency:
+ group: reactapp-${{ github.ref }}
+ cancel-in-progress: false
+jobs:
+ # ==========================================
+ # JOB 1: CI - TEST AND BUILD REACT APP
+ # Runs on dev and main
+ # ==========================================
+ ci:
+   name: CI - Test and Build
+   runs-on: ubuntu-latest
+   steps:
+     - name: Checkout Code
+       uses: actions/checkout@v4
+     - name: Setup Node.js
+       uses: actions/setup-node@v4
+       with:
+         node-version: 24
+     - name: Install Dependencies
+       run: npm ci
+     - name: Run Tests
+       run: npm test -- --watchAll=false
+       env:
+         CI: true
+     - name: Build React Application
+       run: npm run build
+
+ # ==========================================
+ # JOB 2: TERRAFORM - AZURE INFRASTRUCTURE
+ # Runs only on main
+ # ==========================================
+ provision:
+   name: Terraform - Azure Infrastructure
+   runs-on: ubuntu-latest
+   needs: ci
+   if: github.ref == 'refs/heads/main'
+   env:
+     ARM_USE_OIDC: true
+     ARM_USE_AZUREAD: true
+     ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+     ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+     ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+     TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+     TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+     TF_VAR_admin_source_cidr: ${{ vars.AZURE_ADMIN_SOURCE_CIDR }}
+   steps:
+     - name: Checkout Code
+       uses: actions/checkout@v4
+     - name: Azure Login
+       uses: azure/login@v3
+       with:
+         client-id: ${{ secrets.AZURE_CLIENT_ID }}
+         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+     - name: Setup Terraform
+       uses: hashicorp/setup-terraform@v3
+       with:
+         terraform_version: 1.10.5
+     - name: Terraform Init
+       working-directory: terraform
+       run: |
+         terraform init \
+           -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+           -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+           -backend-config="key=reactapp-prod.tfstate" \
+           -backend-config="tenant_id=${{ secrets.AZURE_TENANT_ID }}" \
+           -backend-config="subscription_id=${{ secrets.AZURE_SUBSCRIPTION_ID }}" \
+           -backend-config="client_id=${{ secrets.AZURE_CLIENT_ID }}" \
+           -backend-config="use_azuread_auth=true"
+     - name: Terraform Validate
+       working-directory: terraform
+       run: terraform validate
+     # Generate and display the infrastructure plan
+     - name: Terraform Plan
+       working-directory: terraform
+       run: |
+         terraform plan -out=tfplan
+         terraform show -no-color tfplan
+     # Prevent accidental VM/resource deletion or replacement
+     - name: Terraform Destructive Change Check
+       working-directory: terraform
+       run: |
+         if terraform show -json tfplan | jq -e \
+           '[.resource_changes[]?.change.actions[]?] | any(. == "delete")' \ > /dev/null; then
+           echo "::error::Terraform plan contains a deletion or replacement."
+           echo "Review the plan before allowing this deployment."
+           exit 1
+         fi
+         echo "Safety check passed. No resource deletion or replacement detected."
+     # Apply the reviewed plan
+     - name: Terraform Apply
+       working-directory: terraform
+       run: terraform apply -auto-approve tfplan
+     # Display all resources tracked by Terraform
+     - name: Show Terraform Infrastructure State
+       working-directory: terraform
+       run: |
+         echo "========== TERRAFORM RESOURCE LIST =========="
+         terraform state list
+         echo "========== AZURE VM RESOURCE DETAILS =========="
+         terraform state show azurerm_linux_virtual_machine.vm
+         echo "========== TERRAFORM PLAN SUMMARY =========="
+         terraform show -no-color tfplan | tail -n 15
+     # Display actual Azure VM information
+     - name: Show Azure VM Details
+       run: |
+         echo "========== AZURE VM DETAILS =========="
+         az vm show \
+           --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+           --name ${{ vars.AZURE_VM_NAME }} \
+           --show-details \
+           --query "{VMName:name, Location:location, PublicIP:publicIps, PowerState:powerState}" \
+           --output table
+
+ # ==========================================
+ # JOB 3: DOCKER - BUILD AND PUSH IMAGE
+ # Runs on dev and main
+ # ==========================================
+ docker:
+   name: Docker - Build and Push
+   runs-on: ubuntu-latest
+   needs: ci
+   outputs:
+     image: ${{ steps.meta.outputs.image }}
+     tag: ${{ steps.meta.outputs.tag }}
+   steps:
+     - name: Checkout Code
+       uses: actions/checkout@v4
+     - name: Generate Docker Image Tags
+       id: meta
+       run: |
+         if [[ "${GITHUB_REF}" == "refs/heads/dev" ]]; then
+           TAG="dev-${GITHUB_SHA::7}"
+           LATEST_TAG="dev-latest"
+         else
+           TAG="main-${GITHUB_SHA::7}"
+           LATEST_TAG="latest"
+         fi
+         IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/reactapp:${TAG}"
+         echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+         echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+         echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+         echo "========== DOCKER IMAGE DETAILS =========="
+         echo "Image: $IMAGE"
+         echo "Latest tag: $LATEST_TAG"
+     - name: Setup Docker Buildx
+       uses: docker/setup-buildx-action@v3
+     - name: Login to Docker Hub
+       uses: docker/login-action@v3
+       with:
+         username: ${{ secrets.DOCKERHUB_USERNAME }}
+         password: ${{ secrets.DOCKERHUB_TOKEN }}
+     - name: Build and Push Docker Image
+       uses: docker/build-push-action@v6
+       with:
+         context: .
+         push: true
+         tags: |
+           ${{ secrets.DOCKERHUB_USERNAME }}/reactapp:${{ steps.meta.outputs.tag }}
+           ${{ secrets.DOCKERHUB_USERNAME }}/reactapp:${{ steps.meta.outputs.latest_tag }}
+
+ # ==========================================
+ # JOB 4: DEPLOY TO AZURE LINUX VM
+ # Runs only on main
+ # ==========================================
+ deploy:
+   name: Deploy - Azure Linux VM
+   runs-on: ubuntu-latest
+   needs:
+     - provision
+     - docker
+   if: github.ref == 'refs/heads/main'
+   steps:
+     - name: Azure Login
+       uses: azure/login@v3
+       with:
+         client-id: ${{ secrets.AZURE_CLIENT_ID }}
+         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+     # Deploy using Azure VM Run Command - no SSH private key needed
+     - name: Deploy Docker Container
+       env:
+         IMAGE: ${{ needs.docker.outputs.image }}
+       run: |
+         echo "========== DEPLOYMENT STARTED =========="
+         echo "Docker Image: $IMAGE"
+         az vm run-command invoke \
+           --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+           --name ${{ vars.AZURE_VM_NAME }} \
+           --command-id RunShellScript \
+           --scripts "
+             set -e
+             echo 'Waiting for cloud-init...'
+             cloud-init status --wait || true
+             echo 'Starting Docker...'
+             sudo systemctl enable --now docker
+             if ! command -v curl >/dev/null 2>&1; then
+               sudo apt-get update
+               sudo apt-get install -y curl
+             fi
+             echo 'Pulling Docker image...'
+             sudo docker pull '$IMAGE'
+             echo 'Removing previous container...'
+             sudo docker rm -f reactapp-prod || true
+             echo 'Starting new container...'
+             sudo docker run -d \
+               --name reactapp-prod \
+               --restart unless-stopped \
+               -p 80:80 \
+               '$IMAGE'
+             echo 'Checking application health...'
+             for attempt in {1..12}; do
+               if curl -fsS http://localhost/ >/dev/null; then
+                 echo 'Application is responding successfully!'
+                 exit 0
+               fi
+               echo 'Waiting for application...'
+               sleep 5
+             done
+             echo 'Application health check failed!'
+             sudo docker logs --tail 50 reactapp-prod
+             exit 1
+           "
+     # Show final application URL
+     - name: Show Deployment Details
+       run: |
+         PUBLIC_IP=$(az vm show \
+           --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+           --name ${{ vars.AZURE_VM_NAME }} \
+           --show-details \
+           --query publicIps \
+           --output tsv)
+         echo "======================================"
+         echo "DEPLOYMENT SUCCESSFUL"
+         echo "VM: ${{ vars.AZURE_VM_NAME }}"
+         echo "Application URL: http://$PUBLIC_IP"
+         echo "======================================"
