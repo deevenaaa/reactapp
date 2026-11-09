@@ -66,17 +66,41 @@ jobs:
        uses: hashicorp/setup-terraform@v3
        with:
          terraform_version: 1.10.5
-     - name: Terraform Init
+     - name: Terraform Init - Runtime Debug
        working-directory: terraform
+       timeout-minutes: 5
+       shell: bash
+       env:
+         TF_LOG: INFO
+         TF_LOG_PATH: ${{ runner.temp }}/terraform-init.log
        run: |
-         terraform init \
+         echo "========== TERRAFORM VERSION =========="
+         terraform version
+         echo "========== BACKEND CONFIGURATION =========="
+         echo "Storage Account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}"
+         echo "Container: ${{ vars.TFSTATE_CONTAINER }}"
+         echo "========== BACKEND INITIALIZATION =========="
+         date -u
+         timeout 240s terraform init \
+           -input=false \
+           -no-color \
            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
            -backend-config="key=reactapp-prod.tfstate" \
            -backend-config="tenant_id=${{ secrets.AZURE_TENANT_ID }}" \
            -backend-config="subscription_id=${{ secrets.AZURE_SUBSCRIPTION_ID }}" \
            -backend-config="client_id=${{ secrets.AZURE_CLIENT_ID }}" \
+           -backend-config="use_oidc=true" \
            -backend-config="use_azuread_auth=true"
+         RESULT=$?
+         echo "========== INIT RESULT =========="
+         echo "Exit code: $RESULT"
+         date -u
+         if [ -f "$TF_LOG_PATH" ]; then
+           echo "========== LAST TERRAFORM LOGS =========="
+           tail -n 60 "$TF_LOG_PATH"
+         fi
+         exit $RESULT
      - name: Terraform Validate
        working-directory: terraform
        run: terraform validate
